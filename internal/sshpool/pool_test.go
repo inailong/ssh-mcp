@@ -182,3 +182,36 @@ func TestHandshakeContextTimeout(t *testing.T) {
 		t.Fatal("not accepted")
 	}
 }
+
+func TestProxyJumpConfigResolution(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	text := "Host bastion\n HostName 127.0.0.1\n Port 2221\n User jump\n\nHost target\n HostName 10.0.0.2\n Port 22\n User app\n ProxyJump bastion\n"
+	if err := os.WriteFile(filepath.Join(home, ".ssh/config"), []byte(text), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewPool(&config.Config{Hosts: []string{"target"}, Password: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	target := p.byName["target"]
+	if target == nil {
+		t.Fatal("target not found")
+	}
+	if target.proxyJump != "bastion" {
+		t.Fatalf("target proxyJump = %q, want bastion", target.proxyJump)
+	}
+	// Bastion should be auto-discovered from SSH config
+	bastion := p.byName["bastion"]
+	if bastion == nil {
+		t.Fatal("bastion not auto-registered in pool")
+	}
+	if bastion.info.Port != 2221 || bastion.info.Username != "jump" {
+		t.Fatalf("bastion info = %+v, want port 2221, user jump", bastion.info)
+	}
+}

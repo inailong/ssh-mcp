@@ -29,6 +29,7 @@ type target struct {
 	gate               chan struct{}
 	info               ServerInfo
 	identity, password string
+	proxyJump          string
 	client             *ssh.Client
 }
 type Pool struct {
@@ -81,7 +82,7 @@ func NewPool(cfg *config.Config) (*Pool, error) {
 		}
 		t := &target{gate: make(chan struct{}, 1), info: ServerInfo{Name: name, Host: name, Port: port, Username: user}, identity: identity, password: cfg.Password}
 		if parsed != nil {
-			for _, k := range []string{"HostName", "User", "Port", "IdentityFile"} {
+			for _, k := range []string{"HostName", "User", "Port", "IdentityFile", "ProxyJump"} {
 				v, e := parsed.Get(name, k)
 				if e != nil {
 					return nil, e
@@ -102,6 +103,11 @@ func NewPool(cfg *config.Config) (*Pool, error) {
 					t.info.Port = n
 				case "IdentityFile":
 					t.identity = expandPath(strings.Fields(v)[0])
+				case "ProxyJump":
+					t.proxyJump = strings.TrimSpace(v)
+					if t.proxyJump == "none" {
+						t.proxyJump = ""
+					}
 				}
 			}
 		}
@@ -110,6 +116,47 @@ func NewPool(cfg *config.Config) (*Pool, error) {
 		}
 		p.targets = append(p.targets, t)
 		p.byName[name] = t
+	}
+	if parsed != nil {
+		for i := 0; i < len(p.targets); i++ {
+			j := p.targets[i].proxyJump
+			if j == "" || j == "none" {
+				continue
+			}
+			if _, ok := p.byName[j]; !ok {
+				jt := &target{
+					gate:     make(chan struct{}, 1),
+					info:     ServerInfo{Name: j, Host: j, Port: port, Username: user},
+					identity: identity,
+					password: cfg.Password,
+				}
+				for _, k := range []string{"HostName", "User", "Port", "IdentityFile", "ProxyJump"} {
+					v, e := parsed.Get(j, k)
+					if e != nil || v == "" {
+						continue
+					}
+					switch k {
+					case "HostName":
+						jt.info.Host = strings.ReplaceAll(v, "%h", j)
+					case "User":
+						jt.info.Username = v
+					case "Port":
+						if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 65535 {
+							jt.info.Port = n
+						}
+					case "IdentityFile":
+						jt.identity = expandPath(strings.Fields(v)[0])
+					case "ProxyJump":
+						jt.proxyJump = strings.TrimSpace(v)
+						if jt.proxyJump == "none" {
+							jt.proxyJump = ""
+						}
+					}
+				}
+				p.byName[j] = jt
+				p.targets = append(p.targets, jt)
+			}
+		}
 	}
 	return p, nil
 }
@@ -180,7 +227,17 @@ func (p *Pool) GetClient(ctx context.Context, n string) (*ssh.Client, error) {
 	addr := net.JoinHostPort(t.info.Host, strconv.Itoa(t.info.Port))
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	raw, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", addr)
+	var raw net.Conn
+	var err error
+	if t.proxyJump != "" {
+		jumpClient, jerr := p.GetClient(ctx, t.proxyJump)
+		if jerr != nil {
+			return nil, fmt.Errorf("jump via %s: %w", t.proxyJump, jerr)
+		}
+		raw, err = jumpClient.DialContext(dialCtx, "tcp", addr)
+	} else {
+		raw, err = (&net.Dialer{}).DialContext(dialCtx, "tcp", addr)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +289,7 @@ func (p *Pool) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var first error
-	for _, t := range p.targets {
+	for _, t := range p.byName {
 		t.mu.Lock()
 		if t.client != nil {
 			if e := t.client.Close(); e != nil && first == nil {
