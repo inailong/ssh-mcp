@@ -121,7 +121,7 @@ mcp_servers:
     command: "/usr/local/bin/ssh-mcp"
     args:
       - "--host"
-      - "bgp01,us02,kr01,uk01,sh01,sz01"
+      - "prod-web-01,prod-db-01,bastion-01"
       - "--pty"
       - "false"
 ```
