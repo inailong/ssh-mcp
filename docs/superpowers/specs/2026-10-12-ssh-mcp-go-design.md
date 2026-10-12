@@ -7,7 +7,7 @@
 - **Goals**:
   - 100% CLI parameter compatibility with `@fangjunjie/ssh-mcp-server` (`--host`, `-h`, `--port`, `-p`, `--username`, `-u`, `--password`, `-w`, `--privateKey`, `-k`, `--ssh-config-file`, `--pty`, `--transport-mode`, `--whitelist`, `--blacklist`, and all standard options).
   - Drop-in schema and behavior compatibility for all 10 standard MCP tools.
-  - Multi-node concurrent batch execution on `execute-command` (`connectionNames` array or `["*"]` wildcard).
+  - Strict single-host precision: all tools operate on explicit target hosts (no wildcards or implicit multi-host mutations).
   - Dual-track interactive session support:
     - Track 1: automated expect / idle-timeout bail-out on `execute-command` before client timeouts.
     - Track 2: persistent PTY session tools (`session-open`, `session-send`, `session-read`, `session-close`).
@@ -15,6 +15,7 @@
   - Robust connection pooling with async health checking and non-blocking lazy reconnection.
   - Stdio MCP protocol transport for native agent execution.
 - **Non-Goals**:
+  - Multi-host wildcard broadcast (enforce single-host precision for safety and deterministic audit logs).
   - Replacing native terminal for rich desktop GUI terminal emulators.
   - Supporting Windows PowerShell native remoting (SSH on Windows is supported, WinRM is not).
   - Multi-host broadcast on file modification tools (file operations remain single-host directed for safety and idempotency).
@@ -73,15 +74,14 @@ Parses flag options matching upstream:
    - `execute-command`:
      - Params:
        - `cmdString` (string, required)
-       - `connectionName` (string, optional)
-       - `connectionNames` (array of string, optional, e.g. `["sh01", "sz01"]` or `["*"]`)
+       - `connectionName` (string, optional, defaults to default host)
        - `directory` (string, optional)
        - `timeout` (number in milliseconds, default 30000)
        - `inputs` (array of string, optional auto-feed inputs)
        - `expect` (map of prompt regex -> answer string, optional)
      - Behavior:
+       - Single-host precision: targets exactly one host per call for safe, deterministic execution.
        - Returns command stdout/stderr with trailing `\n[exit code] N` on non-zero exit.
-       - Batched execution runs concurrently via goroutines with per-host timeout, aggregated deterministically.
        - Idle-timeout prompt detection: strips ANSI codes, checks for stalled prompts (`[Y/n]`, `password:`), feeds matching expect response or bails out with current buffer before client timeout.
 3. **Interactive PTY Session Tools (Dual-Track Interactive)**:
    - `session-open`: Creates a persistent pseudo-terminal session on remote host. Returns `sessionId`.
